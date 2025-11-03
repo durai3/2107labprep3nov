@@ -1,0 +1,17 @@
+case 3: // Motor Forward Until Any Bump Switch Pressed
+    EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+    EUSCIA0_OutString("Selected: Motor Forward Until Bump Switch Pressed\r\n");
+    Motor_Forward(3000, 3000); // Move forward at default speed
+    EUSCIA0_OutString("Motor running forward. Press any bumper to stop...\r\n");
+    while (1) {
+        uint8_t bumpState = Bump_Read(); // Reads 6 bump switches, returns 0x3F if NONE are pressed (active low)
+        if (bumpState != 0x3F) {         // If any switch is pressed (active low), stop motor
+            Motor_Stop();
+            EUSCIA0_OutString("Motor stopped due to bumper activation!\r\n");
+            break; // Exit loop after motor stop
+        }
+        Clock_Delay1ms(10); // Small delay for debounce and CPU relief
+    }
+    menu = 1;
+    cmd = 0xDEAD;
+    break;
