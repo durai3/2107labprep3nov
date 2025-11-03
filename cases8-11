@@ -1,0 +1,333 @@
+case 8:  // Simple Movement Sequence
+    {
+        EUSCIA0_OutString("Task: Straight -> Right turn -> Blink Red -> Straight -> Left turn -> Blink Green\r\n");
+        
+        // Initialize LEDs (P2.0 = Red, P2.1 = Green)
+        P2->DIR |= 0x03;  // Set P2.0 and P2.1 as outputs
+        P2->OUT &= ~0x03; // Turn off both LEDs initially
+        
+        // Go straight
+        EUSCIA0_OutString("Moving forward...\r\n");
+        Motor_Forward(3000, 3000);
+        Clock_Delay1ms(1000);
+        Motor_Stop();
+
+        // Turn right
+        EUSCIA0_OutString("Turning right...\r\n");
+        Motor_Right(0, 3000);
+        Clock_Delay1ms(500);
+        Motor_Stop();
+
+        // Blink red LED
+        EUSCIA0_OutString("Blinking red LED...\r\n");
+        for(int i=0; i<3; i++){
+            P2_0 = 1;
+            Clock_Delay1ms(300);
+            P2_0 = 0;
+            Clock_Delay1ms(300);
+        }
+
+        // Go straight again
+        EUSCIA0_OutString("Moving forward again...\r\n");
+        Motor_Forward(3000, 3000);
+        Clock_Delay1ms(1000);
+        Motor_Stop();
+
+        // Turn left
+        EUSCIA0_OutString("Turning left...\r\n");
+        Motor_Left(3000, 0);
+        Clock_Delay1ms(500);
+        Motor_Stop();
+
+        // Blink green LED
+        EUSCIA0_OutString("Blinking green LED...\r\n");
+        for(int i=0; i<3; i++){
+            P2_1 = 1;
+            Clock_Delay1ms(300);
+            P2_1 = 0;
+            Clock_Delay1ms(300);
+        }
+        
+        EUSCIA0_OutString("Task completed!\r\n");
+    }
+    menu = 1; cmd = 0xDEAD;
+    break;
+
+
+
+case 9:  // Black Tape Avoidance
+    {
+        EUSCIA0_OutString("Task: Black Tape Avoidance\r\n");
+        EUSCIA0_OutString("Press LaunchPad button to exit.\r\n");
+        
+        // Initialize reflectance sensor
+        Reflectance_Start();
+        Clock_Delay1ms(10);
+        
+        uint8_t reflectanceData;
+        uint32_t avoidCount = 0;
+
+        while(LaunchPad_Input() == 0){
+            reflectanceData = Reflectance_Read(1000);
+
+            // Check for black tape detection
+            // bit = 0 means black tape detected (active low)
+            // bit0 = rightmost, bit7 = leftmost
+            
+            // Priority: Check all sensors first (surrounded)
+            if((reflectanceData & 0xFF) == 0){
+                // All sensors detect black - completely on tape, back up
+                Motor_Stop();
+                EUSCIA0_OutString("Surrounded by tape! Backing up...\r\n");
+                Motor_Backward(3000, 3000);
+                Clock_Delay1ms(500);
+                Motor_Stop();
+                Motor_Right(0, 3000);  // Turn to escape
+                Clock_Delay1ms(400);
+                Motor_Stop();
+                avoidCount++;
+            }
+            // Check left sensors (bits 6-7)
+            else if((reflectanceData & 0xC0) == 0){
+                // Left sensors detect black tape - turn right
+                Motor_Stop();
+                EUSCIA0_OutString("Tape on left! Turning right...\r\n");
+                Motor_Right(0, 3000);
+                Clock_Delay1ms(400);
+                Motor_Stop();
+                avoidCount++;
+            }
+            // Check right sensors (bits 0-1)
+            else if((reflectanceData & 0x03) == 0){
+                // Right sensors detect black tape - turn left
+                Motor_Stop();
+                EUSCIA0_OutString("Tape on right! Turning left...\r\n");
+                Motor_Left(3000, 0);
+                Clock_Delay1ms(400);
+                Motor_Stop();
+                avoidCount++;
+            }
+            // Check center sensors (bits 2-5)
+            else if((reflectanceData & 0x3C) == 0){
+                // Center sensors detect tape - back up
+                Motor_Stop();
+                EUSCIA0_OutString("Tape ahead! Backing up...\r\n");
+                Motor_Backward(3000, 3000);
+                Clock_Delay1ms(300);
+                Motor_Stop();
+                avoidCount++;
+            }
+            else {
+                // No tape detected - go forward
+                Motor_Forward(3000, 3000);
+            }
+            
+            Clock_Delay1ms(50);
+        }
+        
+        Motor_Stop();
+        EUSCIA0_OutString("Avoided tape ");
+        EUSCIA0_OutUDec(avoidCount);
+        EUSCIA0_OutString(" times.\r\n");
+    }
+    menu = 1; cmd = 0xDEAD;
+    break;
+
+
+
+case 10:  // Follow Black Line
+    {
+        EUSCIA0_OutString("Task: Follow Black Line, Avoid White\r\n");
+        EUSCIA0_OutString("Press LaunchPad button to exit.\r\n");
+        
+        // Initialize reflectance sensor
+        Reflectance_Start();
+        Clock_Delay1ms(10);
+        
+        uint8_t reflectanceData;
+        int32_t position;
+
+        while(LaunchPad_Input() == 0){
+            reflectanceData = Reflectance_Read(1000);
+            
+            // Calculate weighted position (-334 to +334)
+            // Negative = line on left, Positive = line on right, 0 = centered
+            position = Reflectance_Position(reflectanceData);
+            
+            // Simple line following algorithm
+            if(position < -100){
+                // Line is on the left - turn left
+                Motor_Left(2500, 500);
+            }
+            else if(position > 100){
+                // Line is on the right - turn right
+                Motor_Right(500, 2500);
+            }
+            else if(position >= -100 && position <= 100){
+                // Line is centered - go forward
+                Motor_Forward(3000, 3000);
+            }
+            else if((reflectanceData & 0xFF) == 0xFF){
+                // No line detected (all white) - stop
+                Motor_Stop();
+                EUSCIA0_OutString("Lost line! Searching...\r\n");
+                Clock_Delay1ms(200);
+            }
+            
+            Clock_Delay1ms(10);  // Small delay for smooth control
+        }
+
+        Motor_Stop();
+        EUSCIA0_OutString("Line following stopped.\r\n");
+    }
+    menu = 1; cmd = 0xDEAD;
+    break;
+
+
+
+case 11:  // Scan and Bump Targets
+    {
+        EUSCIA0_OutString("Task: Scan 360deg, locate, bump each target, then blink green\r\n");
+        
+        // Initialize sensors
+        IRSensor_Init();
+        BumpInt_Init(&HandleCollision);
+        
+        // Initialize LEDs
+        P2->DIR |= 0x02;  // P2.1 as output (green LED)
+        P2_1 = 0;
+        
+        uint16_t distances[12];
+        uint8_t obstaclePresence[12];
+        
+        EUSCIA0_OutString("Step 1: Scanning 360 degrees...\r\n");
+        
+        // Step 1: Rotate 360°, measure IR distance every 30 degrees
+        for(int i=0; i<12; i++){
+            Motor_Right(0, 2000);
+            Clock_Delay1ms(150);
+            Motor_Stop();
+            Clock_Delay1ms(100);  // Stabilization delay
+            
+            // Wait for ADC reading
+            uint32_t timeout = 0;
+            while(ADCflag == 0 && timeout < 1000) {
+                Clock_Delay1ms(1);
+                timeout++;
+            }
+            ADCflag = 0;
+            
+            uint16_t dist = CenterConvert(nc);
+            distances[i] = dist;
+            obstaclePresence[i] = (dist >= 50 && dist <= 150) ? 1 : 0;  // Expanded range
+            
+            // Display scan results
+            EUSCIA0_OutString("Angle ");
+            EUSCIA0_OutUDec(i * 30);
+            EUSCIA0_OutString("deg: ");
+            EUSCIA0_OutUDec(dist);
+            EUSCIA0_OutString("mm");
+            if(obstaclePresence[i]) {
+                EUSCIA0_OutString(" <- TARGET");
+            }
+            EUSCIA0_OutString("\r\n");
+        }
+        
+        // Step 2: Find all targets (up to 2)
+        int targetIndices[2] = {-1, -1};
+        int targetsFound = 0;
+        for(int i=0; i<12 && targetsFound < 2; i++){
+            if(obstaclePresence[i] == 1){
+                targetIndices[targetsFound] = i;
+                targetsFound++;
+            }
+        }
+        
+        EUSCIA0_OutString("Found ");
+        EUSCIA0_OutUDec(targetsFound);
+        EUSCIA0_OutString(" target(s).\r\n");
+        
+        if(targetsFound == 0){
+            EUSCIA0_OutString("No targets found! Ending task.\r\n");
+        }
+        else {
+            // Step 3: Navigate to each target and bump it
+            int currentAngleIdx = 0;
+            
+            for(int t=0; t<targetsFound; t++){
+                int targetIdx = targetIndices[t];
+                
+                EUSCIA0_OutString("Approaching target ");
+                EUSCIA0_OutUDec(t+1);
+                EUSCIA0_OutString(" at ");
+                EUSCIA0_OutUDec(targetIdx * 30);
+                EUSCIA0_OutString(" degrees...\r\n");
+                
+                // Calculate shortest rotation
+                int diff = targetIdx - currentAngleIdx;
+                if(diff < 0) diff += 12;
+                
+                // Turn to target
+                for(int j=0; j<diff; j++){
+                    Motor_Right(0, 2000);
+                    Clock_Delay1ms(150);
+                    Motor_Stop();
+                    Clock_Delay1ms(50);
+                }
+                currentAngleIdx = targetIdx;
+                
+                // Approach target slowly until bump
+                CollisionFlag = 0;
+                uint32_t moveTimeout = 0;
+                
+                while(moveTimeout < 3000){  // 3 second timeout
+                    Motor_Forward(2500, 2500);
+                    
+                    // Check for bump (active LOW - any bit = 0 means bump)
+                    uint8_t bumpState = Bump_Read();
+                    if(bumpState != 0x3F){  // Any bumper pressed
+                        Motor_Stop();
+                        EUSCIA0_OutString("Target bumped!\r\n");
+                        break;
+                    }
+                    
+                    Clock_Delay1ms(10);
+                    moveTimeout += 10;
+                }
+                
+                Motor_Stop();
+                
+                if(moveTimeout >= 3000){
+                    EUSCIA0_OutString("Timeout - could not reach target.\r\n");
+                }
+                
+                // Back up
+                Motor_Backward(3000, 3000);
+                Clock_Delay1ms(500);
+                Motor_Stop();
+                
+                // Turn 180 degrees
+                EUSCIA0_OutString("Turning around...\r\n");
+                for(int j=0; j<6; j++){
+                    Motor_Right(0, 2000);
+                    Clock_Delay1ms(150);
+                    Motor_Stop();
+                    Clock_Delay1ms(50);
+                }
+                currentAngleIdx = (currentAngleIdx + 6) % 12;
+            }
+        }
+        
+        // Step 4: Blink green LED to indicate completion
+        EUSCIA0_OutString("Mission complete! Blinking green LED...\r\n");
+        for(int i=0; i<5; i++){
+            P2_1 = 1;
+            Clock_Delay1ms(300);
+            P2_1 = 0;
+            Clock_Delay1ms(300);
+        }
+        
+        Motor_Stop();
+    }
+    menu = 1; cmd = 0xDEAD;
+    break;
