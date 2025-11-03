@@ -1,0 +1,33 @@
+            case 3: // Bumper Test - SIMPLE VERSION
+                EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+                EUSCIA0_OutString("Selected: Bumper Test (Simple)"); 
+                EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+                EUSCIA0_OutString("Robot will move forward. Press any bumper to stop.");
+                EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+                
+                // Initialize bump sensor with interrupt
+                BumpInt_Init(&HandleBump);
+                
+                // Reset the flag
+                BumpDetected = 0;
+                
+                // Start moving forward
+                Motor_Forward(3000, 3000);
+                EUSCIA0_OutString("Robot moving... waiting for bump...");
+                EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+                
+                // Wait here until bump is detected
+                while(BumpDetected == 0){
+                    // Do nothing, just wait for bump interrupt
+                }
+                
+                // When we get here, bump was detected and motor is stopped
+                EUSCIA0_OutString("BUMP DETECTED! Motor stopped.");
+                EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+                
+                // Small delay to let user see the message
+                Clock_Delay1ms(2000);
+                
+                menu = 1;
+                cmd = 0xDEAD;
+                break;
