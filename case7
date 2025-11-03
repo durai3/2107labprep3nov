@@ -1,0 +1,65 @@
+
+case 7: // Obstacle Avoidance
+    IRSensor_Init();
+    EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+    EUSCIA0_OutString("Selected: Obstacle Avoidance"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+    EUSCIA0_OutString("Press LaunchPad button to exit.\r\n");
+    
+    speed = 3000;
+    uint32_t avoidanceCount = 0;
+    
+    while(LaunchPad_Input() == 0){
+        while(ADCflag == 0) { WaitForInterrupt(); }
+        ADCflag = 0;
+        
+        uint32_t leftDist = LeftConvert(nl);
+        uint32_t centerDist = CenterConvert(nc);
+        uint32_t rightDist = RightConvert(nr);
+        
+        if(centerDist < 80){
+            Motor_Stop();
+            Motor_Backward(speed, speed);
+            Clock_Delay1ms(300);
+            Motor_Stop();
+            Motor_Right(0, speed);
+            Clock_Delay1ms(400);
+            Motor_Stop();
+            avoidanceCount++;
+            EUSCIA0_OutString("Avoided obstacle #");
+            EUSCIA0_OutUDec(avoidanceCount);
+            EUSCIA0_OutString("\r\n");
+        }
+        else if(leftDist < 80){
+            Motor_Stop();
+            Motor_Backward(speed, speed);
+            Clock_Delay1ms(250);
+            Motor_Stop();
+            Motor_Right(0, speed);
+            Clock_Delay1ms(500);
+            Motor_Stop();
+            avoidanceCount++;
+        }
+        else if(rightDist < 80){
+            Motor_Stop();
+            Motor_Backward(speed, speed);
+            Clock_Delay1ms(250);
+            Motor_Stop();
+            Motor_Left(speed, 0);
+            Clock_Delay1ms(500);
+            Motor_Stop();
+            avoidanceCount++;
+        }
+        else {
+            Motor_Forward(speed, speed);
+        }
+        
+        Clock_Delay1ms(100);
+    }
+    
+    Motor_Stop();
+    EUSCIA0_OutString("Total obstacles avoided: ");
+    EUSCIA0_OutUDec(avoidanceCount);
+    EUSCIA0_OutString("\r\n");
+    menu = 1; 
+    cmd = 0xDEAD;
+    break;
