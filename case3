@@ -1,0 +1,88 @@
+case 3:   // Bumper Test
+    EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+    EUSCIA0_OutString("Selected: Bumper Test\r\n");
+    EUSCIA0_OutString("Enable bump interrupt and stop motor after bump? [y/n]: ");
+    uint32_t answer = EUSCIA0_InChar();
+    EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+
+    if (answer != 'y' && answer != 'n') {
+        EUSCIA0_OutString("Invalid selection. Choose 'y' or 'n'.\r\n");
+        break;
+    }
+
+    CollisionData = 0;
+    CollisionFlag = 0;
+
+    if (answer == 'y') {
+        // Mode: Interrupt-based, stop after first bump
+        BumpInt_Init(&HandleCollision);  // Initialize bump interrupts
+        
+        EUSCIA0_OutString("Moving forward. Robot will stop on first bump.\r\n");
+        Motor_Forward(3000, 3000);
+        
+        // Wait for bump interrupt
+        while (CollisionFlag == 0) {
+            WaitForInterrupt();
+        }
+        
+        Motor_Stop();
+        
+        // Display which bumper was hit
+        uint8_t bumpBits = ConvertCollisionData(CollisionData);
+        EUSCIA0_OutString("Bump detected: ");
+        for (int i = 0; i < 6; i++) {
+            EUSCIA0_OutChar((bumpBits & (1 << i)) ? '1' : '0');
+        }
+        EUSCIA0_OutString("\r\n");
+        
+        // Identify specific bumper
+        switch (bumpBits) {
+            case 0x01: EUSCIA0_OutString("1st Bumper (Far Right) Activated!\r\n"); break;
+            case 0x02: EUSCIA0_OutString("2nd Bumper (Right) Activated!\r\n"); break;
+            case 0x04: EUSCIA0_OutString("3rd Bumper (Center Right) Activated!\r\n"); break;
+            case 0x08: EUSCIA0_OutString("4th Bumper (Center Left) Activated!\r\n"); break;
+            case 0x10: EUSCIA0_OutString("5th Bumper (Left) Activated!\r\n"); break;
+            case 0x20: EUSCIA0_OutString("6th Bumper (Far Left) Activated!\r\n"); break;
+            default: EUSCIA0_OutString("Multiple bumpers activated!\r\n"); break;
+        }
+        
+    } else {
+        // Mode: Polling-based, track all bumps continuously
+        EUSCIA0_OutString("Polling mode. Press LaunchPad button to exit.\r\n");
+        
+        while (LaunchPad_Input() == 0) {
+            Motor_Forward(3000, 3000);
+            
+            // Poll bump sensors directly
+            uint8_t bumpData = Bump_Read();
+            
+            if (bumpData != 0x3F) {  // Check if any bumper is pressed (active LOW)
+                Motor_Stop();
+                
+                // Convert to active HIGH representation for display
+                uint8_t bumpBits = (~bumpData) & 0x3F;
+                
+                EUSCIA0_OutString("Bump: ");
+                for (int i = 0; i < 6; i++) {
+                    EUSCIA0_OutChar((bumpBits & (1 << i)) ? '1' : '0');
+                }
+                EUSCIA0_OutString("\r\n");
+                
+                // Wait for bumper release
+                while (Bump_Read() != 0x3F) {
+                    Clock_Delay1ms(10);
+                }
+                
+                Clock_Delay1ms(500);  // Brief pause before resuming
+            }
+        }
+        
+        Motor_Stop();
+        EUSCIA0_OutString("Test ended.\r\n");
+    }
+    
+    menu = 1;
+    cmd = 0xDEAD;
+    break;
+
+
