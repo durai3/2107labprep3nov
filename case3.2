@@ -1,0 +1,82 @@
+case 3: // Bumper Test
+    EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+    EUSCIA0_OutString("Selected: Bumper Test"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+    EUSCIA0_OutString("Enable bump interrupt and stop motor after bump? [y/n]: ");
+    uint32_t answer = EUSCIA0_InChar();
+    EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+
+    if (answer != 'y' && answer != 'n') {
+        EUSCIA0_OutString("Invalid selection. Choose 'y' or 'n'.\r\n");
+        menu = 1;
+        cmd = 0xDEAD;
+        break;
+    }
+
+    // Reset collision variables
+    CollisionData = 0;
+    CollisionFlag = 0;
+
+    if (answer == 'y') {
+        // Single bump detection - stop after first bump
+        EUSCIA0_OutString("Moving forward... Press any bumper to stop.\r\n");
+        Motor_Forward(3000, 3000);
+        
+        // Wait for bump
+        while(CollisionFlag == 0) {
+            WaitForInterrupt();
+        }
+        
+        // Bump detected - stop motor
+        Motor_Stop();
+        
+        // Read and display bumper data
+        uint8_t bumpData = Bump_Read();
+        EUSCIA0_OutString("Bumper pressed: ");
+        for(int i = 0; i < 6; i++){
+            EUSCIA0_OutChar((bumpData & (1 << i)) ? '0' : '1');  // Note: bumpers are active low
+        }
+        EUSCIA0_OutString("\r\n");
+        
+        // Identify which bumper
+        uint8_t bumpBits = (~bumpData) & 0x3F;  // Invert and mask to get active bumpers
+        switch(bumpBits) {
+            case 0x01: EUSCIA0_OutString("Bumper 0: Far Right\r\n"); break;
+            case 0x02: EUSCIA0_OutString("Bumper 1: Right\r\n"); break;
+            case 0x04: EUSCIA0_OutString("Bumper 2: Center Right\r\n"); break;
+            case 0x08: EUSCIA0_OutString("Bumper 3: Center Left\r\n"); break;
+            case 0x10: EUSCIA0_OutString("Bumper 4: Left\r\n"); break;
+            case 0x20: EUSCIA0_OutString("Bumper 5: Far Left\r\n"); break;
+            default: EUSCIA0_OutString("Multiple bumpers or unknown pattern\r\n"); break;
+        }
+        
+    } else {
+        // Continuous monitoring - track all bumps until LaunchPad button pressed
+        EUSCIA0_OutString("Moving forward... Press LaunchPad button to exit.\r\n");
+        
+        while(LaunchPad_Input() == 0) {
+            Motor_Forward(3000, 3000);
+            
+            if(CollisionFlag == 1) {
+                Motor_Stop();
+                
+                uint8_t bumpData = Bump_Read();
+                EUSCIA0_OutString("Bump: ");
+                for(int i = 0; i < 6; i++){
+                    EUSCIA0_OutChar((bumpData & (1 << i)) ? '0' : '1');
+                }
+                EUSCIA0_OutString("\r\n");
+                
+                // Reset flag and back up briefly
+                CollisionFlag = 0;
+                Motor_Backward(3000, 3000);
+                Clock_Delay1ms(300);
+                Motor_Stop();
+                Clock_Delay1ms(100);
+            }
+        }
+        Motor_Stop();
+    }
+    
+    menu = 1;
+    cmd = 0xDEAD;
+    break;
