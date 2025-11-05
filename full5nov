@@ -1,0 +1,1149 @@
+// RSLK Self Test via UART
+
+/* This example accompanies the books
+   "Embedded Systems: Introduction to the MSP432 Microcontroller",
+       ISBN: 978-1512185676, Jonathan Valvano, copyright (c) 2017
+   "Embedded Systems: Real-Time Interfacing to the MSP432 Microcontroller",
+       ISBN: 978-1514676585, Jonathan Valvano, copyright (c) 2017
+   "Embedded Systems: Real-Time Operating Systems for ARM Cortex-M Microcontrollers",
+       ISBN: 978-1466468863, , Jonathan Valvano, copyright (c) 2017
+ For more information about my classes, my research, and my books, see
+ http://users.ece.utexas.edu/~valvano/
+
+Simplified BSD License (FreeBSD License)
+Copyright (c) 2017, Jonathan Valvano, All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+The views and conclusions contained in the software and documentation are
+those of the authors and should not be interpreted as representing official
+policies, either expressed or implied, of the FreeBSD Project.
+*/
+
+#include "msp.h"
+#include <stdint.h>
+#include <string.h>
+#include "..\inc\UART0.h"
+#include "..\inc\EUSCIA0.h"
+#include "..\inc\FIFO0.h"
+#include "..\inc\Clock.h"
+//#include "..\inc\SysTick.h"
+#include "..\inc\SysTickInts.h"
+#include "..\inc\CortexM.h"
+#include "..\inc\TimerA1.h"
+#include "..\inc\Bump.h"
+#include "..\inc\BumpInt.h"
+#include "..\inc\LaunchPad.h"
+#include "..\inc\Motor.h"
+#include "../inc/IRDistance.h"
+#include "../inc/ADC14.h"
+#include "../inc/LPF.h"
+#include "..\inc\Reflectance.h"
+#include "../inc/TA3InputCapture.h"
+#include "../inc/Tachometer.h"
+
+#define P2_4 (*((volatile uint8_t *)(0x42098070)))
+#define P2_3 (*((volatile uint8_t *)(0x4209806C)))
+#define P2_2 (*((volatile uint8_t *)(0x42098068)))
+#define P2_1 (*((volatile uint8_t *)(0x42098064)))
+#define P2_0 (*((volatile uint8_t *)(0x42098060)))
+
+
+
+
+
+
+///START///
+
+uint16_t Period0;              // (1/SMCLK) units = 83.3 ns units
+uint16_t First0=0;             // Timer A3 first edge, P10.4
+uint32_t Done0=0;              // set each rising
+
+uint16_t Period2;              // (1/SMCLK) units = 83.3 ns units
+uint16_t First2=0;             // Timer A3 first edge, P8.2
+uint32_t Done2=0;              // set each rising
+
+//volatile uint8_t bumpState;
+volatile uint8_t status;
+int volatile speed = 3000;
+int bumpAct = 0;
+//char message[20];
+
+volatile uint32_t ADCvalue;
+volatile uint32_t ADCflag;
+volatile uint32_t nr, nc, nl;
+
+
+volatile uint8_t CollisionData = 0;
+volatile uint8_t CollisionFlag = 0;
+
+
+///END///
+
+
+
+
+
+void RSLK_Reset(void){
+    DisableInterrupts();
+
+    LaunchPad_Init();
+    //Initialise modules used e.g. Reflectance Sensor, Bump Switch, Motor, Tachometer etc
+    // ... ...
+
+    EnableInterrupts();
+}
+
+
+
+
+
+
+////SATRT//////
+
+
+//samples data from various sensors, filters the data and sets a flag to indicate that new sensor data is available
+void SensorRead_ISR(void)   //code from Lab4_ADCmain.c
+{  // runs at 2000 Hz
+    uint32_t raw17, raw12, raw16;
+    P1OUT ^= 0x01;         // profile, used to toggle the state of the LSB of P1OUT (for profiling and debugging)
+    P1OUT ^= 0x01;         // profile
+    ADC_In17_12_16(&raw17, &raw12, &raw16);  // sample
+    nr = LPF_Calc(raw17);  // right is channel 17 P9.0
+    nc = LPF_Calc2(raw12);  // center is channel 12, P4.1
+    nl = LPF_Calc3(raw16);  // left is channel 16, P9.1
+    ADCflag = 1;           // semaphore
+    P1OUT ^= 0x01;         // profile
+}
+
+//initializes the infrared sensors and prepares system to read data from the sensors. Also initializes UART communication
+void IRSensor_Init(void)    //code from Lab4_ADCmain.c
+{
+    uint32_t raw12, raw16, raw17;
+    int32_t n; uint32_t s;
+    Clock_Init48MHz();  //SMCLK=12Mhz
+    ADCflag = 0;
+    s = 256; // replace with your choice
+    ADC0_InitSWTriggerCh17_12_16();   // initialize channels 17,12,16
+    ADC_In17_12_16(&raw17,&raw12,&raw16);  // sample
+    LPF_Init(raw17,s);     // P9.0/channel 17
+    LPF_Init2(raw12,s);     // P4.1/channel 12
+    LPF_Init3(raw16,s);     // P9.1/channel 16
+    UART0_Init();          // initialize UART0 115,200 baud rate
+    LaunchPad_Init();
+    TimerA1_Init(&SensorRead_ISR,250);    // 2000 Hz sampling
+}
+
+volatile uint8_t CollisionData, CollisionFlag;
+
+//called when collision is detected. Stops motor, processes the collision data (which bumpers are activated?).
+void HandleCollision(uint8_t bumpSensor) {
+    Motor_Stop();
+    CollisionData = bumpSensor & 0x3F; // Mask 6 lower bits for bumpers
+    CollisionFlag = 1;
+
+    // Clear interrupt flags in Port 4 (assuming bump switches connected there)
+    P4->IFG &= ~0x3F;
+
+    // Optionally output bump activation status
+    for (int i = 0; i < 6; i++) {
+        if ((CollisionData >> i) & 1) {
+            UART0_OutString("Bumper ");
+            UART0_OutChar('0' + i);
+            UART0_OutString(" activated\r\n");
+        }
+    }
+}
+
+uint8_t ConvertCollisionData(uint8_t data) {
+    return data & 0x3F; // Mask lower 6 bits (bump switches)
+}
+
+//measure time intervals using Timer A3. Capturing the time when an edge occurs.
+void PeriodMeasure0(uint16_t time){
+  Period0 = (time - First0)&0xFFFF; // 16 bits, 83.3 ns resolution
+  First0 = time;                    // setup for next
+  Done0++;
+}
+
+// max period is (2^16-1)*83.3 ns = 5.4612 ms
+// min period determined by time to run ISR, which is about 1 us
+void PeriodMeasure2(uint16_t time){
+  Period2 = (time - First2)&0xFFFF; // 16 bits, 83.3 ns resolution
+  First2 = time;                    // setup for next
+  Done2++;
+}
+
+
+/////END//////
+
+
+
+
+
+
+
+
+
+
+// RSLK Self-Test
+// Sample program of how the text based menu can be designed.
+// Only one entry (RSLK_Reset) is coded in the switch case. Fill up with other menu entries required for Lab5 assessment.
+// Init function to various peripherals are commented off.  For reference only. Not the complete list.
+
+int main(void) {
+    uint32_t cmd=0xDEAD, menu=0;
+
+    DisableInterrupts();
+    Clock_Init48MHz();  // makes SMCLK=12 MHz
+    //SysTick_Init(48000,2);  // set up SysTick for 1000 Hz interrupts
+    Motor_Init();
+    //Motor_Stop();
+    LaunchPad_Init();
+    Bump_Init(); // <-- CORRECT bump init
+    //Bumper_Init();
+    //IRSensor_Init();
+    //Tachometer_Init();
+    EUSCIA0_Init();     // initialize UART
+    EnableInterrupts();
+
+  while(1){                     // Loop forever
+      // write this as part of Lab 5
+      EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("RSLK Testing"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("[0] RSLK Reset"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("[1] Motor Test"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("[2] IR Sensor Test"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("[3] Bumper Test"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("[4] Reflectance Sensor Test"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("[5] Tachometer Test"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("[6] Control Robot"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);                 //NEWLY ADDED BY DURAI
+      EUSCIA0_OutString("[7] Obstacle Avoidance"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("[8] ltask1"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("[9] Task: Black Tape Avoidance"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("[10] Task: Follow Black Line, Avoid White"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+      EUSCIA0_OutString("[11] Task: Scan 360°, locate, bump each target, then blink green\r\n"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+
+
+
+      EUSCIA0_OutString("CMD: ");
+      cmd=EUSCIA0_InUDec();
+      EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+
+      switch(cmd) {
+          case 0:
+              RSLK_Reset();
+              menu = 1;
+              cmd = 0xDEAD;
+              break;
+
+
+
+
+
+
+////START/////
+
+          case 1: // Motor Test
+              EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("Selected: Motor Test"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("Control Instructions:"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("[f] forward"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("[b] backward"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("[l] left-turn (right wheel only)"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("[r] right-turn (left wheel only)"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              uint32_t motorMode = EUSCIA0_InChar();
+              EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              switch(motorMode){
+                  case 'f':
+                      Motor_Forward(3000,3000); Clock_Delay1ms(1000); Motor_Stop(); break;
+                  case 'b':
+                      Motor_Backward(3000,3000); Clock_Delay1ms(1000); Motor_Stop(); break;
+                  case 'l':
+                      Motor_Left(3000,0); Clock_Delay1ms(1000); Motor_Stop(); break;
+                  case 'r':
+                      Motor_Right(0,3000); Clock_Delay1ms(1000); Motor_Stop(); break;
+                  default: break;
+              }
+              menu=1; cmd=0xDEAD;
+              break;
+
+
+          case 2: // IR Sensor Test
+              IRSensor_Init(); // Initialize IR sensors and start TimerA1
+              EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("Selected: IR Sensor Test"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+
+              for(int i = 0; i < 20; i++) {
+                  while(ADCflag == 0) {}  // Wait for new sensor reading from ISR
+                  ADCflag = 0;            // Reset flag for next reading
+                  UART0_OutUDec5(LeftConvert(nl)); UART0_OutString(" mm,");
+                  UART0_OutUDec5(CenterConvert(nc)); UART0_OutString(" mm,");
+                  UART0_OutUDec5(RightConvert(nr)); UART0_OutString(" mm\r\n");
+                  Clock_Delay1ms(50);     // Optional: make output easier to read
+                  }
+              menu = 1;
+              cmd = 0xDEAD;
+              break;
+
+
+
+
+
+          case 3: // Motor Forward Until Any Bump Switch Pressed
+              EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("Selected: Motor Forward Until Bump Switch Pressed\r\n");
+              Motor_Forward(3000, 3000); // Move forward at default speed
+              EUSCIA0_OutString("Motor running forward. Press any bumper to stop...\r\n");
+              while (1) {
+                  uint8_t bumpState = Bump_Read(); // Reads 6 bump switches, returns 0x3F if NONE are pressed (active low)
+                  if (bumpState != 0x3F) {         // If any switch is pressed (active low), stop motor
+                      Motor_Stop();
+                      EUSCIA0_OutString("Motor stopped due to bumper activation!\r\n");
+                      break; // Exit loop after motor stop
+                  }
+                  Clock_Delay1ms(10); // Small delay for debounce and CPU relief
+              }
+              menu = 1;
+              cmd = 0xDEAD;
+              break;
+
+
+
+          case 4: // Reflectance Sensor Test
+              EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("Selected: Reflectance Sensor Test"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              uint8_t refData = 0;
+              for(int i = 0; i < 30; i++){
+                  refData = Reflectance_Read(1000);
+                  for(int j = 0; j < 8; j++){
+                      EUSCIA0_OutUDec(refData % 2); EUSCIA0_OutString("-");
+                      refData = refData >> 1;
+                  }
+                  EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF); Clock_Delay1ms(500);
+              }
+              menu=1; cmd=0xDEAD;
+              break;
+
+
+
+
+          case 5: // Tachometer Test
+              EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("Selected: Tachometer Test"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              uint32_t main_count=0;
+              TimerA3Capture_Init(&PeriodMeasure0,&PeriodMeasure2);
+              Clock_Delay1ms(500); Motor_Forward(3000,3000);
+              while(LaunchPad_Input()==0){
+                  WaitForInterrupt(); main_count++;
+                  if(main_count%50000==0){
+                      UART0_OutString("Period0 = "); UART0_OutUDec5(Period0);
+                      UART0_OutString(" Period2 = "); UART0_OutUDec5(Period2);
+                      UART0_OutString(" \r\n");
+                  }
+              }
+              Motor_Stop();
+              menu=1; cmd=0xDEAD;
+              break;
+
+
+
+
+          case 6: // Robot Remote Control
+              RSLK_Reset();
+              EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("Selected: Control Robot"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("Control Instructions:"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("[w] forward"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("[x] backward"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("[a] left-turn"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("[d] right-turn"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("[s] stop motor"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("[q] accelerate"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("[z] decelerate"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              while(LaunchPad_Input()==0){
+                  uint32_t motorModeC = EUSCIA0_InChar();
+                  EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+                  switch(motorModeC){
+                      case 'w': Motor_Forward(speed,speed); break;
+                      case 'a': Motor_Left(speed,0); break;
+                      case 'd': Motor_Right(0,speed); break;
+                      case 'x': Motor_Backward(speed,speed); break;
+                      case 's': Motor_Stop(); break;
+                      case 'q': speed *= 1.2; break;
+                      case 'z': speed *= 0.8; break;
+                      default: break;
+                  }
+              }
+              menu=1; cmd=0xDEAD;
+              break;
+
+
+
+
+
+//          case 7: // Obstacle Avoidance
+//              IRSensor_Init(); // Ensure sensors and ISR are initialized and timer running
+//              EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+//              EUSCIA0_OutString("Selected: Obstacle Avoidance"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+//
+//              while(LaunchPad_Input() == 0){
+//                  Motor_Forward(speed,speed);
+//
+//                  while(ADCflag == 0) {} // Wait for next IR reading
+//                  ADCflag = 0;
+//
+//                  UART0_OutUDec5(LeftConvert(nl)); UART0_OutString(" mm,");
+//                  UART0_OutUDec5(CenterConvert(nc)); UART0_OutString(" mm,");
+//                  UART0_OutUDec5(RightConvert(nr)); UART0_OutString(" mm\r\n");
+//
+//                  if(LeftConvert(nl) < 80){
+//                      Motor_Stop(); Motor_Backward(speed,speed);
+//                      Clock_Delay1ms(250); Motor_Stop();
+//                      Motor_Right(0,speed); Clock_Delay1ms(500);
+//                  }
+//                  else if(CenterConvert(nc) < 80){
+//                      Motor_Stop(); Motor_Backward(speed,speed);
+//                      Clock_Delay1ms(250); Motor_Stop();
+//                      Motor_Right(0,speed); Clock_Delay1ms(250);
+//                  }
+//                  else if(RightConvert(nr) < 80){
+//                      Motor_Stop(); Motor_Backward(speed,speed);
+//                      Clock_Delay1ms(250); Motor_Stop();
+//                      Motor_Left(0,speed); Clock_Delay1ms(500);
+//                  }
+//                  // Optional: add a delay here if UART floods
+//                  // Clock_Delay1ms(50);
+//              }
+//              menu = 1; cmd = 0xDEAD;
+//              break;
+
+
+
+
+          case 7: // Obstacle Avoidance
+              IRSensor_Init();
+              EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("Selected: Obstacle Avoidance"); EUSCIA0_OutChar(CR); EUSCIA0_OutChar(LF);
+              EUSCIA0_OutString("Press LaunchPad button to exit.\r\n");
+
+              speed = 3000;
+              uint32_t avoidanceCount = 0;
+
+              while(LaunchPad_Input() == 0){
+                  while(ADCflag == 0) { WaitForInterrupt(); }
+                  ADCflag = 0;
+
+                  uint32_t leftDist = LeftConvert(nl);
+                  uint32_t centerDist = CenterConvert(nc);
+                  uint32_t rightDist = RightConvert(nr);
+
+                  if(centerDist < 80){
+                      Motor_Stop();
+                      Motor_Backward(speed, speed);
+                      Clock_Delay1ms(300);
+                      Motor_Stop();
+                      Motor_Right(0, speed);
+                      Clock_Delay1ms(400);
+                      Motor_Stop();
+                      avoidanceCount++;
+                      EUSCIA0_OutString("Avoided obstacle #");
+                      EUSCIA0_OutUDec(avoidanceCount);
+                      EUSCIA0_OutString("\r\n");
+                  }
+                  else if(leftDist < 80){
+                      Motor_Stop();
+                      Motor_Backward(speed, speed);
+                      Clock_Delay1ms(250);
+                      Motor_Stop();
+                      Motor_Right(0, speed);
+                      Clock_Delay1ms(500);
+                      Motor_Stop();
+                      avoidanceCount++;
+                  }
+                  else if(rightDist < 80){
+                      Motor_Stop();
+                      Motor_Backward(speed, speed);
+                      Clock_Delay1ms(250);
+                      Motor_Stop();
+                      Motor_Left(speed, 0);
+                      Clock_Delay1ms(500);
+                      Motor_Stop();
+                      avoidanceCount++;
+                  }
+                  else {
+                      Motor_Forward(speed, speed);
+                  }
+
+                  Clock_Delay1ms(100);
+              }
+
+              Motor_Stop();
+              EUSCIA0_OutString("Total obstacles avoided: ");
+              EUSCIA0_OutUDec(avoidanceCount);
+              EUSCIA0_OutString("\r\n");
+              menu = 1;
+              cmd = 0xDEAD;
+              break;
+
+
+
+
+
+
+          case 8:  // Simple Movement Sequence
+              {
+                  EUSCIA0_OutString("Task: Straight -> Right turn -> Blink Red -> Straight -> Left turn -> Blink Green\r\n");
+
+                  // Initialize LEDs (P2.0 = Red, P2.1 = Green)
+                  P2->DIR |= 0x03;  // Set P2.0 and P2.1 as outputs
+                  P2->OUT &= ~0x03; // Turn off both LEDs initially
+
+                  // Go straight
+                  EUSCIA0_OutString("Moving forward...\r\n");
+                  Motor_Forward(3000, 3000);
+                  Clock_Delay1ms(1000);
+                  Motor_Stop();
+
+                  // Turn right
+                  EUSCIA0_OutString("Turning right...\r\n");
+                  Motor_Right(0, 3000);
+                  Clock_Delay1ms(500);
+                  Motor_Stop();
+
+                  // Blink red LED
+                  EUSCIA0_OutString("Blinking red LED...\r\n");
+                  for(int i=0; i<3; i++){
+                      P2_0 = 1;
+                      Clock_Delay1ms(300);
+                      P2_0 = 0;
+                      Clock_Delay1ms(300);
+                  }
+
+                  // Go straight again
+                  EUSCIA0_OutString("Moving forward again...\r\n");
+                  Motor_Forward(3000, 3000);
+                  Clock_Delay1ms(1000);
+                  Motor_Stop();
+
+                  // Turn left
+                  EUSCIA0_OutString("Turning left...\r\n");
+                  Motor_Left(3000, 0);
+                  Clock_Delay1ms(500);
+                  Motor_Stop();
+
+                  // Blink green LED
+                  EUSCIA0_OutString("Blinking green LED...\r\n");
+                  for(int i=0; i<3; i++){
+                      P2_1 = 1;
+                      Clock_Delay1ms(300);
+                      P2_1 = 0;
+                      Clock_Delay1ms(300);
+                  }
+
+                  EUSCIA0_OutString("Task completed!\r\n");
+              }
+              menu = 1; cmd = 0xDEAD;
+              break;
+
+
+
+          case 9:  // Black Tape Avoidance
+              {
+                  EUSCIA0_OutString("Task: Black Tape Avoidance\r\n");
+                  EUSCIA0_OutString("Press LaunchPad button to exit.\r\n");
+
+                  // Initialize reflectance sensor
+                  Reflectance_Start();
+                  Clock_Delay1ms(10);
+
+                  uint8_t reflectanceData;
+                  uint32_t avoidCount = 0;
+
+                  while(LaunchPad_Input() == 0){
+                      reflectanceData = Reflectance_Read(1000);
+
+                      // Check for black tape detection
+                      // bit = 0 means black tape detected (active low)
+                      // bit0 = rightmost, bit7 = leftmost
+
+                      // Priority: Check all sensors first (surrounded)
+                      if((reflectanceData & 0xFF) == 0){
+                          // All sensors detect black - completely on tape, back up
+                          Motor_Stop();
+                          EUSCIA0_OutString("Surrounded by tape! Backing up...\r\n");
+                          Motor_Backward(3000, 3000);
+                          Clock_Delay1ms(500);
+                          Motor_Stop();
+                          Motor_Right(0, 3000);  // Turn to escape
+                          Clock_Delay1ms(400);
+                          Motor_Stop();
+                          avoidCount++;
+                      }
+                      // Check left sensors (bits 6-7)
+                      else if((reflectanceData & 0xC0) == 0){
+                          // Left sensors detect black tape - turn right
+                          Motor_Stop();
+                          EUSCIA0_OutString("Tape on left! Turning right...\r\n");
+                          Motor_Right(0, 3000);
+                          Clock_Delay1ms(400);
+                          Motor_Stop();
+                          avoidCount++;
+                      }
+                      // Check right sensors (bits 0-1)
+                      else if((reflectanceData & 0x03) == 0){
+                          // Right sensors detect black tape - turn left
+                          Motor_Stop();
+                          EUSCIA0_OutString("Tape on right! Turning left...\r\n");
+                          Motor_Left(3000, 0);
+                          Clock_Delay1ms(400);
+                          Motor_Stop();
+                          avoidCount++;
+                      }
+                      // Check center sensors (bits 2-5)
+                      else if((reflectanceData & 0x3C) == 0){
+                          // Center sensors detect tape - back up
+                          Motor_Stop();
+                          EUSCIA0_OutString("Tape ahead! Backing up...\r\n");
+                          Motor_Backward(3000, 3000);
+                          Clock_Delay1ms(300);
+                          Motor_Stop();
+                          avoidCount++;
+                      }
+                      else {
+                          // No tape detected - go forward
+                          Motor_Forward(3000, 3000);
+                      }
+
+                      Clock_Delay1ms(50);
+                  }
+
+                  Motor_Stop();
+                  EUSCIA0_OutString("Avoided tape ");
+                  EUSCIA0_OutUDec(avoidCount);
+                  EUSCIA0_OutString(" times.\r\n");
+              }
+              menu = 1; cmd = 0xDEAD;
+              break;
+
+
+
+          case 10:  // Follow Black Line
+              {
+                  EUSCIA0_OutString("Task: Follow Black Line, Avoid White\r\n");
+                  EUSCIA0_OutString("Press LaunchPad button to exit.\r\n");
+
+                  // Initialize reflectance sensor
+                  Reflectance_Start();
+                  Clock_Delay1ms(10);
+
+                  uint8_t reflectanceData;
+                  int32_t position;
+
+                  while(LaunchPad_Input() == 0){
+                      reflectanceData = Reflectance_Read(1000);
+
+                      // Calculate weighted position (-334 to +334)
+                      // Negative = line on left, Positive = line on right, 0 = centered
+                      position = Reflectance_Position(reflectanceData);
+
+                      // Simple line following algorithm
+                      if(position < -100){
+                          // Line is on the left - turn left
+                          Motor_Left(2500, 500);
+                      }
+                      else if(position > 100){
+                          // Line is on the right - turn right
+                          Motor_Right(500, 2500);
+                      }
+                      else if(position >= -100 && position <= 100){
+                          // Line is centered - go forward
+                          Motor_Forward(3000, 3000);
+                      }
+                      else if((reflectanceData & 0xFF) == 0xFF){
+                          // No line detected (all white) - stop
+                          Motor_Stop();
+                          EUSCIA0_OutString("Lost line! Searching...\r\n");
+                          Clock_Delay1ms(200);
+                      }
+
+                      Clock_Delay1ms(10);  // Small delay for smooth control
+                  }
+
+                  Motor_Stop();
+                  EUSCIA0_OutString("Line following stopped.\r\n");
+              }
+              menu = 1; cmd = 0xDEAD;
+              break;
+
+
+
+//          case 11:  // Scan and Bump Targets
+//              {
+//                  EUSCIA0_OutString("Task: Scan 360deg, locate, bump each target, then blink green\r\n");
+//
+//                  // Initialize sensors
+//                  IRSensor_Init();
+//                  BumpInt_Init(&HandleCollision);
+//
+//                  // Initialize LEDs
+//                  P2->DIR |= 0x02;  // P2.1 as output (green LED)
+//                  P2_1 = 0;
+//
+//                  uint16_t distances[12];
+//                  uint8_t obstaclePresence[12];
+//
+//                  EUSCIA0_OutString("Step 1: Scanning 360 degrees...\r\n");
+//
+//                  // Step 1: Rotate 360°, measure IR distance every 30 degrees
+//                  for(int i=0; i<12; i++){
+//                      Motor_Right(0, 2000);
+//                      Clock_Delay1ms(150);
+//                      Motor_Stop();
+//                      Clock_Delay1ms(100);  // Stabilization delay
+//
+//                      // Wait for ADC reading
+//                      uint32_t timeout = 0;
+//                      while(ADCflag == 0 && timeout < 1000) {
+//                          Clock_Delay1ms(1);
+//                          timeout++;
+//                      }
+//                      ADCflag = 0;
+//
+//                      uint16_t dist = CenterConvert(nc);
+//                      distances[i] = dist;
+//                      obstaclePresence[i] = (dist >= 50 && dist <= 150) ? 1 : 0;  // Expanded range
+//
+//                      // Display scan results
+//                      EUSCIA0_OutString("Angle ");
+//                      EUSCIA0_OutUDec(i * 30);
+//                      EUSCIA0_OutString("deg: ");
+//                      EUSCIA0_OutUDec(dist);
+//                      EUSCIA0_OutString("mm");
+//                      if(obstaclePresence[i]) {
+//                          EUSCIA0_OutString(" <- TARGET");
+//                      }
+//                      EUSCIA0_OutString("\r\n");
+//                  }
+//
+//                  // Step 2: Find all targets (up to 2)
+//                  int targetIndices[2] = {-1, -1};
+//                  int targetsFound = 0;
+//                  for(int i=0; i<12 && targetsFound < 2; i++){
+//                      if(obstaclePresence[i] == 1){
+//                          targetIndices[targetsFound] = i;
+//                          targetsFound++;
+//                      }
+//                  }
+//
+//                  EUSCIA0_OutString("Found ");
+//                  EUSCIA0_OutUDec(targetsFound);
+//                  EUSCIA0_OutString(" target(s).\r\n");
+//
+//                  if(targetsFound == 0){
+//                      EUSCIA0_OutString("No targets found! Ending task.\r\n");
+//                  }
+//                  else {
+//                      // Step 3: Navigate to each target and bump it
+//                      int currentAngleIdx = 0;
+//
+//                      for(int t=0; t<targetsFound; t++){
+//                          int targetIdx = targetIndices[t];
+//
+//                          EUSCIA0_OutString("Approaching target ");
+//                          EUSCIA0_OutUDec(t+1);
+//                          EUSCIA0_OutString(" at ");
+//                          EUSCIA0_OutUDec(targetIdx * 30);
+//                          EUSCIA0_OutString(" degrees...\r\n");
+//
+//                          // Calculate shortest rotation
+//                          int diff = targetIdx - currentAngleIdx;
+//                          if(diff < 0) diff += 12;
+//
+//                          // Turn to target
+//                          for(int j=0; j<diff; j++){
+//                              Motor_Right(0, 2000);
+//                              Clock_Delay1ms(150);
+//                              Motor_Stop();
+//                              Clock_Delay1ms(50);
+//                          }
+//                          currentAngleIdx = targetIdx;
+//
+//                          // Approach target slowly until bump
+//                          CollisionFlag = 0;
+//                          uint32_t moveTimeout = 0;
+//
+//                          while(moveTimeout < 3000){  // 3 second timeout
+//                              Motor_Forward(2500, 2500);
+//
+//                              // Check for bump (active LOW - any bit = 0 means bump)
+//                              uint8_t bumpState = Bump_Read();
+//                              if(bumpState != 0x3F){  // Any bumper pressed
+//                                  Motor_Stop();
+//                                  EUSCIA0_OutString("Target bumped!\r\n");
+//                                  break;
+//                              }
+//
+//                              Clock_Delay1ms(10);
+//                              moveTimeout += 10;
+//                          }
+//
+//                          Motor_Stop();
+//
+//                          if(moveTimeout >= 3000){
+//                              EUSCIA0_OutString("Timeout - could not reach target.\r\n");
+//                          }
+//
+//                          // Back up
+//                          Motor_Backward(3000, 3000);
+//                          Clock_Delay1ms(500);
+//                          Motor_Stop();
+//
+//                          // Turn 180 degrees
+//                          EUSCIA0_OutString("Turning around...\r\n");
+//                          for(int j=0; j<6; j++){
+//                              Motor_Right(0, 2000);
+//                              Clock_Delay1ms(150);
+//                              Motor_Stop();
+//                              Clock_Delay1ms(50);
+//                          }
+//                          currentAngleIdx = (currentAngleIdx + 6) % 12;
+//                      }
+//                  }
+//
+//                  // Step 4: Blink green LED to indicate completion
+//                  EUSCIA0_OutString("Mission complete! Blinking green LED...\r\n");
+//                  for(int i=0; i<5; i++){
+//                      P2_1 = 1;
+//                      Clock_Delay1ms(300);
+//                      P2_1 = 0;
+//                      Clock_Delay1ms(300);
+//                  }
+//
+//                  Motor_Stop();
+//              }
+//              menu = 1; cmd = 0xDEAD;
+//              break;
+
+
+
+
+
+
+
+//          case 8:
+//              {
+//                  EUSCIA0_OutString("Task: Straight -> Right turn -> Blink Red -> Straight -> Left turn -> Blink Green\r\n");
+//
+//                  // Go straight
+//                  Motor_Forward(3000, 3000);
+//                  Clock_Delay1ms(1000);
+//                  Motor_Stop();
+//
+//                  // Turn right
+//                  Motor_Right(0, 3000);
+//                  Clock_Delay1ms(500);
+//                  Motor_Stop();
+//
+//                  // Blink red LED (assumed to be P2.0)
+//                  for(int i=0; i<3; i++){
+//                      P2_0 = 1;
+//                      Clock_Delay1ms(300);
+//                      P2_0 = 0;
+//                      Clock_Delay1ms(300);
+//                  }
+//
+//                  // Go straight again
+//                  Motor_Forward(3000, 3000);
+//                  Clock_Delay1ms(1000);
+//                  Motor_Stop();
+//
+//                  // Turn left
+//                  Motor_Left(3000, 0);
+//                  Clock_Delay1ms(500);
+//                  Motor_Stop();
+//
+//                  // Blink green LED (assumed to be P2.1)
+//                  for(int i=0; i<3; i++){
+//                      P2_1 = 1;
+//                      Clock_Delay1ms(300);
+//                      P2_1 = 0;
+//                      Clock_Delay1ms(300);
+//                  }
+//
+//              }
+//              menu = 1; cmd = 0xDEAD;
+//              break;
+//
+//
+//
+//          case 9:
+//              {
+//                  EUSCIA0_OutString("Task: Black Tape Avoidance\r\n");
+//
+//                  // Assume Reflectance_Init() already done; using Reflectance_Read(threshold) function
+//                  // Threshold 1000 is example; adjust to your calibration
+//                  uint8_t reflectanceData;
+//
+//                  while(LaunchPad_Input() == 0){  // Run until LaunchPad button pressed
+//                      reflectanceData = Reflectance_Read(1000);  // Read 8-bit reflectance sensor data
+//
+//                      // Check reflectance bits to detect black tape (bit = 0 means black tape detected)
+//                      // Reflectance sensor bits: bit0 = rightmost sensor, bit7 = leftmost sensor
+//
+//                      if((reflectanceData & 0x03) == 0){   // Both right sensors detect black tape - turn left
+//                          Motor_Stop();
+//                          Motor_Left(3000, 0);
+//                          Clock_Delay1ms(400);
+//                          Motor_Stop();
+//                      }
+//                      else if((reflectanceData & 0xC0) == 0){  // Both left sensors detect black tape - turn right
+//                          Motor_Stop();
+//                          Motor_Right(0, 3000);
+//                          Clock_Delay1ms(400);
+//                          Motor_Stop();
+//                      }
+//                      else if((reflectanceData & 0xFF) == 0){  // All sensors detect black tape - stop and back up
+//                          Motor_Stop();
+//                          Motor_Backward(3000, 3000);
+//                          Clock_Delay1ms(500);
+//                          Motor_Stop();
+//                      }
+//                      else {
+//                          // No tape detected - go forward
+//                          Motor_Forward(3000, 3000);
+//                      }
+//                      Clock_Delay1ms(50); // Small delay to reduce looping speed
+//                  }
+//                  Motor_Stop();
+//
+//                  menu = 1; cmd = 0xDEAD;
+//              }
+//              break;
+//
+//
+//              // Case 10: Follow Black Line, Avoid White
+//              case 10:
+//                  {
+//                      EUSCIA0_OutString("Task: Follow Black Line, Avoid White\r\n");
+//
+//                      // Assumes reflectance sensors read black tape as 0 bits and white as 1 bits
+//                      // Using Reflectance_Read(threshold) to get sensor states (8 sensors)
+//
+//                      uint8_t reflectanceData;
+//
+//                      while(LaunchPad_Input() == 0){  // Run until LaunchPad button pressed
+//                          reflectanceData = Reflectance_Read(1000);
+//
+//                          /* Reflectance sensor bits:
+//                             bit7 ... bit0 corresponds to sensors left to right
+//                             Black line -> sensor reads 0
+//                             White surface -> sensor reads 1
+//
+//                             Strategy (example):
+//                             - If center sensors detect black line, go forward
+//                             - If line shifts left, turn left
+//                             - If line shifts right, turn right
+//                             - If no sensor detects black line, stop or search (optional)
+//                          */
+//
+//                          // Check center sensors (bits 3 and 4)
+//                          uint8_t center = (reflectanceData >> 3) & 0x03;
+//
+//                          if(center != 0){  // Center sensors not on black line
+//                              // Check left side sensors (bits 5-7)
+//                              if((reflectanceData & 0xE0) != 0xE0){  // some left sensors detect black
+//                                  Motor_Left(3000, 0);
+//                              }
+//                              // Check right side sensors (bits 0-2)
+//                              else if((reflectanceData & 0x07) != 0x07){  // some right sensors detect black
+//                                  Motor_Right(0, 3000);
+//                              }
+//                              else {
+//                                  Motor_Stop();  // No line found - stop
+//                              }
+//                          }
+//                          else {
+//                              // Center sensors detect line, go forward
+//                              Motor_Forward(3000, 3000);
+//                          }
+//
+//                          Clock_Delay1ms(50);
+//                      }
+//
+//                      Motor_Stop();
+//                      menu = 1; cmd = 0xDEAD;
+//                  }
+//                  break;
+//
+//
+//
+//
+//
+//              case 11:
+//              {
+//                  EUSCIA0_OutString("Task: Scan 360°, locate, bump each target, then blink green\r\n");
+//
+//                  IRSensor_Init();
+//
+//                  uint16_t distances[12];
+//                  uint8_t obstaclePresence[12];
+//
+//                  // Step 1: Rotate 360°, measure IR distance every 30 degrees
+//                  for(int i=0; i<12; i++){
+//                      Motor_Right(0, 2000);
+//                      Clock_Delay1ms(150);
+//                      Motor_Stop();
+//
+//                      while(ADCflag == 0) {};
+//                      ADCflag = 0;
+//                      uint16_t dist = CenterConvert(nc);
+//                      distances[i] = dist;
+//                      obstaclePresence[i] = (dist >= 20 && dist <= 40) ? 1 : 0;
+//                  }
+//
+//                  // Step 2: Find first two targets
+//                  int targetIndices[2] = {-1, -1};
+//                  int targetsFound = 0;
+//                  for(int i=0; i<12 && targetsFound < 2; i++){
+//                      if(obstaclePresence[i] == 1){
+//                          targetIndices[targetsFound] = i;
+//                          targetsFound++;
+//                      }
+//                  }
+//
+//                  // Current assumed direction index (0)
+//                  int currentAngleIdx = 0;
+//
+//                  // Inline function to turn to target angle index
+//                  for(int t=0; t<targetsFound; t++){
+//                      int targetIdx = targetIndices[t];
+//                      int diff = targetIdx - currentAngleIdx;
+//                      if(diff < 0) diff += 12;  // correct for wrap-around
+//
+//                      for(int j=0; j<diff; j++){
+//                          Motor_Right(0, 2000);
+//                          Clock_Delay1ms(120);
+//                          Motor_Stop();
+//                      }
+//                      currentAngleIdx = targetIdx;
+//
+//                      // Approach target by moving forward
+//                      Motor_Forward(3000, 3000);
+//                      Clock_Delay1ms(1000);
+//                      Motor_Stop();
+//
+//                      // Wait until bumper pressed to simulate bumping
+//                      while((Bump_Read() & 0x3F) == 0) {}  // wait for any bumper press
+//
+//                      // Turn 180 degrees around
+//                      for(int j=0; j<6; j++){  // 6 x 30 degrees = 180 degrees
+//                          Motor_Right(0, 2000);
+//                          Clock_Delay1ms(120);
+//                          Motor_Stop();
+//                      }
+//                      // Update current angle after turn-around
+//                      currentAngleIdx = (currentAngleIdx + 6) % 12;
+//                  }
+//
+//                  // Blink green LED (P2.1) 3 times
+//                  for(int i=0; i<3; i++){
+//                      P2_1 = 1;
+//                      Clock_Delay1ms(300);
+//                      P2_1 = 0;
+//                      Clock_Delay1ms(300);
+//                  }
+//
+//                  menu = 1; cmd = 0xDEAD;
+//              }
+//              break;
+
+
+
+
+
+
+
+//////END////////////
+
+
+
+
+
+
+
+
+
+
+
+              // ....
+              // ....ENDD
+
+          default:
+              menu=1;
+              break;
+      }
+
+      if(!menu)Clock_Delay1ms(3000);
+      else{
+          menu=0;
+      }
+
+      // ....
+      // ....
+  }
+}
+
+#if 0
+//Sample program for using the UART related functions.
+int Program5_4(void){
+//int main(void){
+    // demonstrates features of the EUSCIA0 driver
+  char ch;
+  char string[20];
+  uint32_t n;
+  DisableInterrupts();
+  Clock_Init48MHz();  // makes SMCLK=12 MHz
+  EUSCIA0_Init();     // initialize UART
+  EnableInterrupts();
+  EUSCIA0_OutString("\nLab 5 Test program for EUSCIA0 driver\n\rEUSCIA0_OutChar examples\n");
+  for(ch='A'; ch<='Z'; ch=ch+1){// print the uppercase alphabet
+     EUSCIA0_OutChar(ch);
+  }
+  EUSCIA0_OutChar(LF);
+  for(ch='a'; ch<='z'; ch=ch+1){// print the lowercase alphabet
+    EUSCIA0_OutChar(ch);
+  }
+  while(1){
+    EUSCIA0_OutString("\n\rInString: ");
+    EUSCIA0_InString(string,19); // user enters a string
+    EUSCIA0_OutString(" OutString="); EUSCIA0_OutString(string); EUSCIA0_OutChar(LF);
+
+    EUSCIA0_OutString("InUDec: ");   n=EUSCIA0_InUDec();
+    EUSCIA0_OutString(" OutUDec=");  EUSCIA0_OutUDec(n); EUSCIA0_OutChar(LF);
+    EUSCIA0_OutString(" OutUFix1="); EUSCIA0_OutUFix1(n); EUSCIA0_OutChar(LF);
+    EUSCIA0_OutString(" OutUFix2="); EUSCIA0_OutUFix2(n); EUSCIA0_OutChar(LF);
+
+    EUSCIA0_OutString("InUHex: ");   n=EUSCIA0_InUHex();
+    EUSCIA0_OutString(" OutUHex=");  EUSCIA0_OutUHex(n); EUSCIA0_OutChar(LF);
+  }
+}
+#endif
